@@ -4,9 +4,9 @@ import firebase_admin
 import time
 from datetime import datetime, timedelta
 from streamlit_cookies_manager import EncryptedCookieManager
-from firebase_admin import credentials, auth, firestore
+from firebase_admin import credentials, auth
 
-# Firebase Admin SDK credentials
+# Firebase Admin SDK credentials (from your JSON file)
 cred = credentials.Certificate({
     "type": "service_account",
     "project_id": "t7-securities-database",
@@ -22,7 +22,7 @@ cred = credentials.Certificate({
 
 # Initialize Firebase Admin SDK only if not already initialized
 if not firebase_admin._apps:
-    default_app = firebase_admin.initialize_app(cred)
+    firebase_admin.initialize_app(cred)
 
 # Pyrebase setup for client-side operations
 firebase_config = {
@@ -36,175 +36,161 @@ firebase_config = {
     "measurementId": "G-DNJN5ZKZEP"
 }
 
-# Initialize Pyrebase
 firebase = pyrebase.initialize_app(firebase_config)
 auth_client = firebase.auth()
-db = firestore.client()
 
-# Set page config
-st.set_page_config(page_title="Login", page_icon="🔑")
-
-# Cookie manager setup
-cookies = EncryptedCookieManager(
-    prefix="myapp_",
-    password="A very secret password",
-)
-
-if not cookies.ready():
-    st.stop()
-
-# Constants
-TIMEOUT_DURATION = 900  # 15 minutes in seconds
-
-# Authentication functions
+# Authentication functions for login, registration, and password reset
 def login_user(email, password):
     try:
         user = auth_client.sign_in_with_email_and_password(email, password)
-        return user['idToken'], user['email']
-    except Exception as e:
-        st.error(f"Login failed: {str(e)}")
-        return None, None
+        # Return only the user's email from the Firebase response
+        return user['email']  
+    except:
+        return None
 
-def register_user(email, password, role):
+def register_user(email, password):
     try:
-        if not email or not password:
-            raise ValueError("Email and password cannot be empty.")
-        user = auth_client.create_user_with_email_and_password(email, password)
-        db.collection('users').document(email).set({"role": role})
+        auth_client.create_user_with_email_and_password(email, password)
         return True
-    except Exception as e:
-        st.error(f"Registration failed: {str(e)}")
+    except:
         return False
 
 def reset_password(email):
     try:
         auth_client.send_password_reset_email(email)
         return True
-    except Exception as e:
-        st.error(f"Password reset failed: {str(e)}")
+    except:
         return False
 
+# Set up encrypted cookies for storing login state
+cookies = EncryptedCookieManager(
+    prefix="myapp_",  # You can change this prefix to your app's name
+    password="A very secret password",  # Make sure to use a real secret key
+)
+
+# Check if cookies are ready to use
+if not cookies.ready():
+    st.stop()
+
+# Timeout duration set to 15 minutes (900 seconds)
+TIMEOUT_DURATION = 900  # 15 minutes in seconds
+
+# Function to check if session is timed out
 def check_session_timeout():
     current_time = time.time()
+
+    # Check if last activity is stored in cookies
     if "last_activity" in cookies:
         last_activity = float(cookies["last_activity"])
-        if current_time - last_activity > TIMEOUT_DURATION:
-            logout_user()
+        time_diff = current_time - last_activity
+        if time_diff > TIMEOUT_DURATION:
+            st.warning("Session timed out due to inactivity. Please log in again.")
+            st.session_state["logged_in"] = False
+            st.session_state["user"] = None
+            cookies["logged_in"] = "False"  # Update the cookie to reflect logout
+            cookies.save()  # Save cookie changes
+            st.experimental_rerun()
+
+    # Update the last activity in cookies and session state
     cookies["last_activity"] = str(current_time)
-    cookies.save()
+    cookies.save()  # Don't forget to save the cookies!
 
-def logout_user():
-    st.session_state["logged_in"] = False
-    st.session_state["user_email"] = None
-    cookies["logged_in"] = "False"
-    cookies["user_email"] = ""
-    cookies.save()
-    st.rerun()
+def main():
+    st.title('Firebase Authentication with Streamlit')
 
-def navigate_to(page):
-    st.experimental_set_query_params(page=page)  # Use this for setting query parameters
-    st.rerun()
+    # Initialize session states
+    if "logged_in" not in st.session_state:
+        if "logged_in" in cookies:
+            st.session_state["logged_in"] = cookies["logged_in"] == "True"
+        else:
+            st.session_state["logged_in"] = False
 
-# Page handlers
-def admin_login_page():
-    st.title("Admin Login")
-    with st.form("admin_login_form"):
-        email = st.text_input("Admin Email")
-        password = st.text_input("Admin Password", type="password")
-        submit = st.form_submit_button("Login as Admin")
+    if "user_email" not in st.session_state:
+        if "user_email" in cookies:
+            st.session_state["user_email"] = cookies["user_email"]
+        else:
+            st.session_state["user_email"] = None
+
+    if "register" not in st.session_state:
+        st.session_state["register"] = False
+    if "forgot_password" not in st.session_state:
+        st.session_state["forgot_password"] = False  # To control the password reset visibility
+
+    # Check for session timeout
+    if st.session_state["logged_in"]:
+        check_session_timeout()
+
+    # User logged in
+    if st.session_state["logged_in"]:
+        st.write(f"You are logged in as: {st.session_state['user_email']}")
         
-        if submit:
-            id_token, user_email = login_user(email, password)
-            if id_token:
-                user_doc = db.collection('users').document(email).get()
-                if user_doc.exists and user_doc.to_dict().get('role') == 'admin':
-                    st.session_state["logged_in"] = True
-                    st.session_state["user_email"] = user_email
-                    cookies["logged_in"] = "True"
-                    cookies["user_email"] = user_email
-                    cookies["last_activity"] = str(time.time())
-                    cookies.save()
-                    st.rerun()
-                else:
-                    st.error("You do not have Admin privileges.")
+        if st.button("Logout"):
+            st.session_state["logged_in"] = False
+            st.session_state["user_email"] = None
+            cookies["logged_in"] = "False"
+            cookies["user_email"] = ""
+            cookies.save()  # Clear the cookies upon logout
+            st.rerun()
 
-def user_login_page():
-    st.title("User Login")
-    with st.form("user_login_form"):
-        email = st.text_input("User Email")
-        password = st.text_input("User Password", type="password")
-        submit = st.form_submit_button("Login as User")
-        
-        if submit:
-            id_token, user_email = login_user(email, password)
-            if id_token:
-                user_doc = db.collection('users').document(email).get()
-                if user_doc.exists and user_doc.to_dict().get('role') == 'user':
-                    st.session_state["logged_in"] = True
-                    st.session_state["user_email"] = user_email
-                    cookies["logged_in"] = "True"
-                    cookies["user_email"] = user_email
-                    cookies["last_activity"] = str(time.time())
-                    cookies.save()
-                    st.rerun()
-                else:
-                    st.error("You do not have User privileges.")
-
-def registration_page():
-    st.title("Register a New Account")
-    with st.form("registration_form"):
+    # Registration section
+    elif st.session_state["register"]:
+        st.subheader("Register a New Account")
         email = st.text_input("Enter your email")
         password = st.text_input("Enter your password", type="password")
         confirm_password = st.text_input("Confirm your password", type="password")
-        role = st.selectbox("Select role", ["user", "admin"])
-        submit = st.form_submit_button("Register")
-        
-        if submit:
+
+        if st.button("Register"):
             if password == confirm_password:
-                if register_user(email, password, role):
+                if register_user(email, password):
                     st.success("Registration successful! You can now log in.")
-                    time.sleep(2)  # Give user time to read the success message
-                    navigate_to("user")
+                    st.session_state["register"] = False
+                    st.rerun()
+                else:
+                    st.error("Registration failed. Try again.")
             else:
-                st.error("Passwords do not match.")
+                st.error("Passwords do not match. Please try again.")
 
-def main():
-    # Initialize session state variables
-    if "logged_in" not in st.session_state:
-        st.session_state["logged_in"] = False
-    if "user_email" not in st.session_state:
-        st.session_state["user_email"] = None
+        if st.button("Back to Login"):
+            st.session_state["register"] = False
+            st.rerun()
 
-    # Check session timeout if logged in
-    if st.session_state["logged_in"]:
-        check_session_timeout()
-        st.write(f"Logged in as: {st.session_state['user_email']}")
-        if st.button("Logout"):
-            logout_user()
+    # Login section
     else:
-        # Handle navigation
-        page = st.experimental_get_query_params().get("page", ["user"])[0]
+        st.subheader("Login")
+        email = st.text_input("Enter your email")
+        password = st.text_input("Enter your password", type="password")
 
-        if page == "admin":
-            admin_login_page()
-        elif page == "register":
-            registration_page()
-        else:
-            user_login_page()
+        if st.button("Login"):
+            user_email = login_user(email, password)
+            if user_email:
+                st.session_state["logged_in"] = True
+                st.session_state["user_email"] = user_email
+                cookies["logged_in"] = "True"  # Save logged-in state to cookies
+                cookies["user_email"] = user_email  # Store user's email in cookies
+                cookies["last_activity"] = str(time.time())  # Save activity time
+                cookies.save()  # Save the cookies
+                st.rerun()
+            else:
+                st.error("Invalid email or password")
 
-        # Navigation buttons
-        st.markdown("---")
-        col1, col2, col3 = st.columns([1, 1, 1])
+        if st.button("Sign Up"):
+            st.session_state["register"] = True
+            st.rerun()
 
-        with col1:
-            if st.button("Admin Login"):
-                navigate_to("admin")
-        with col2:
-            if st.button("User Login"):
-                navigate_to("user")
-        with col3:
-            if st.button("Register"):
-                navigate_to("register")
+        if st.button("Forgot Password"):
+            st.session_state["forgot_password"] = not st.session_state["forgot_password"]
 
-if __name__ == "__main__":
+        if st.session_state["forgot_password"]:
+            st.subheader("Forgot Password")
+            reset_email = st.text_input("Enter your email for password reset")
+            if st.button("Send Password Reset Email"):
+                if reset_email:
+                    if reset_password(reset_email):
+                        st.success("Password reset email sent! Check your inbox.")
+                    else:
+                        st.error("Failed to send password reset email. Please try again.")
+                else:
+                    st.error("Please enter a valid email address.")
+
+if __name__ == '__main__':
     main()
